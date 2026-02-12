@@ -39,7 +39,9 @@ class PluginWifiConnectPlugin() : FlutterPlugin, MethodCallHandler {
   // holds the network id returned by WifiManager.addNetwork, required to disconnect (API < 29)
   private var networkId: Int? = null
   private var isTriggered: Boolean = true
-  
+
+  private var wifiLock: WifiManager.WifiLock? = null
+
   private val connectivityManager: ConnectivityManager by lazy(LazyThreadSafetyMode.NONE) {
     context?.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
   }
@@ -295,6 +297,11 @@ class PluginWifiConnectPlugin() : FlutterPlugin, MethodCallHandler {
         val info = intent.getParcelableExtra<NetworkInfo>(WifiManager.EXTRA_NETWORK_INFO)
         if(info != null && info.isConnected) {
           if (info.extraInfo == wifiConfiguration.SSID || getSSID() == wifiConfiguration.SSID) {
+            // Acquire WifiLock to keep Wi-Fi active
+            if (wifiLock == null) {
+              wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "PluginWifiConnectLock")
+              wifiLock?.acquire()
+            }
             result.success(true)
             context?.unregisterReceiver(this)
           } else if (count > 1) {
@@ -310,7 +317,7 @@ class PluginWifiConnectPlugin() : FlutterPlugin, MethodCallHandler {
     intentFilter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION)
     context?.registerReceiver(wifiChangeReceiver, intentFilter)
 
-    // enable the new network and attempt to connect to it 
+    // enable the new network and attempt to connect to it
     wifiManager.enableNetwork(network, true)
     networkId = network
   }
@@ -318,7 +325,7 @@ class PluginWifiConnectPlugin() : FlutterPlugin, MethodCallHandler {
   @RequiresApi(Build.VERSION_CODES.Q)
   fun connect(@NonNull specifier: WifiNetworkSpecifier, @NonNull result: Result){
     isTriggered = false
-    
+
     if (this.networkCallback != null) {
       // there was already a connection, unregister to disconnect before proceeding
       // Warning: a disconnect should be called in the flutter layer before trying
@@ -361,10 +368,16 @@ class PluginWifiConnectPlugin() : FlutterPlugin, MethodCallHandler {
     if (this.networkCallback == null){
       return false
     }
-    
+
     connectivityManager.unregisterNetworkCallback(this.networkCallback!!)
     connectivityManager.bindProcessToNetwork(null)
     this.networkCallback = null
+
+    // Release WifiLock if held
+    if (wifiLock != null && wifiLock!!.isHeld) {
+      wifiLock?.release()
+      wifiLock = null
+    }
 
     return true
   }
@@ -381,6 +394,11 @@ class PluginWifiConnectPlugin() : FlutterPlugin, MethodCallHandler {
       override fun onReceive(context: Context, intent: Intent) {
         val info = intent.getParcelableExtra<NetworkInfo>(WifiManager.EXTRA_NETWORK_INFO)
         if(info != null && !info.isConnected){
+          // Release WifiLock if held
+          if (wifiLock != null && wifiLock!!.isHeld) {
+            wifiLock?.release()
+            wifiLock = null
+          }
           result.success(true)
           context?.unregisterReceiver(this)
         }
