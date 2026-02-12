@@ -42,6 +42,9 @@ class PluginWifiConnectPlugin() : FlutterPlugin, MethodCallHandler {
 
   private var wifiLock: WifiManager.WifiLock? = null
 
+  // Expose network for MQTT connection usage
+  var networkForMqtt: Network? = null
+
   private val connectivityManager: ConnectivityManager by lazy(LazyThreadSafetyMode.NONE) {
     context?.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
   }
@@ -298,9 +301,20 @@ class PluginWifiConnectPlugin() : FlutterPlugin, MethodCallHandler {
         if(info != null && info.isConnected) {
           if (info.extraInfo == wifiConfiguration.SSID || getSSID() == wifiConfiguration.SSID) {
             // Acquire WifiLock to keep Wi-Fi active
-            if (wifiLock == null) {
+            if (wifiLock == null || !wifiLock!!.isHeld) {
               wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "PluginWifiConnectLock")
               wifiLock?.acquire()
+            }
+            // For Android Q and above, bind process to network to prevent disconnect during MQTT usage
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+              val network = connectivityManager.allNetworks.find {
+                val caps = connectivityManager.getNetworkCapabilities(it)
+                caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+              }
+              if (network != null) {
+                connectivityManager.bindProcessToNetwork(network)
+                networkForMqtt = network
+              }
             }
             result.success(true)
             context?.unregisterReceiver(this)
@@ -342,6 +356,7 @@ class PluginWifiConnectPlugin() : FlutterPlugin, MethodCallHandler {
       override fun onAvailable(network: Network) {
         super.onAvailable(network)
         connectivityManager.bindProcessToNetwork(network)
+        networkForMqtt = network
         if(!isTriggered){
           result.success(true)
           isTriggered = true
@@ -372,6 +387,7 @@ class PluginWifiConnectPlugin() : FlutterPlugin, MethodCallHandler {
     connectivityManager.unregisterNetworkCallback(this.networkCallback!!)
     connectivityManager.bindProcessToNetwork(null)
     this.networkCallback = null
+    networkForMqtt = null
 
     // Release WifiLock if held
     if (wifiLock != null && wifiLock!!.isHeld) {
